@@ -1,0 +1,64 @@
+name: Build and Release NetMonApp
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    name: Build for Windows
+    runs-on: windows-latest
+
+    env:
+      VERSION: ${{ github.ref_name }}
+      ISCC_PATH: "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe"
+
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        choco install mingw -y
+
+    - name: 🏗️ Build project and installer
+      run: .\build.bat
+
+    - name: 📤 Upload Windows installer
+      uses: actions/upload-artifact@v4
+      with:
+        name: NetMonAppInstaller
+        path: installer_output/NetMonAppInstaller.exe
+
+  release:
+    name: 📦 Create GitHub Release
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+
+    env:
+      VERSION: ${{ github.ref_name }}
+
+    steps:
+    - name: 📥 Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: 🗂️ List files
+      run: ls -R artifacts
+
+    - name: 🚀 Publish GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ env.VERSION }}
+        name: NetMonApp ${{ env.VERSION }}
+        files: |
+          artifacts/NetMonAppInstaller/NetMonAppInstaller.exe
