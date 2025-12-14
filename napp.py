@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Dict, List
 
 import psutil
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    QSettings,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QBrush,
@@ -67,6 +75,8 @@ if platform.system() == "Windows":
 else:
     # Fallback for other platforms
     winsound = None
+
+from version import __version__
 
 # Configuration constants
 DEFAULT_CONFIG = {
@@ -137,6 +147,83 @@ COLORS = {
 }
 
 
+class AppPaths:
+    """Handle all application paths for proper Windows deployment"""
+
+    @staticmethod
+    def get_app_data_dir() -> Path:
+        """Get writable app data directory"""
+        if platform.system() == "Windows":
+            # Use AppData/Local for writable storage
+            app_data = os.getenv(
+                "LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local")
+            )
+            app_dir = Path(app_data) / "NetworkMonitor"
+        else:
+            # Use standard paths for other OS
+            app_dir = Path(
+                QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+            )
+
+        app_dir.mkdir(parents=True, exist_ok=True)
+        return app_dir
+
+    @staticmethod
+    def get_logs_dir() -> Path:
+        """Get logs directory"""
+        logs_dir = AppPaths.get_app_data_dir() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return logs_dir
+
+    @staticmethod
+    def get_exports_dir() -> Path:
+        """Get exports directory"""
+        exports_dir = AppPaths.get_app_data_dir() / "exports"
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        return exports_dir
+
+    @staticmethod
+    def get_firewall_dir() -> Path:
+        """Get firewall rules directory"""
+        firewall_dir = AppPaths.get_app_data_dir() / "firewall_rules"
+        firewall_dir.mkdir(parents=True, exist_ok=True)
+        return firewall_dir
+
+    @staticmethod
+    def get_seen_ips_file() -> Path:
+        """Get seen IPs file path"""
+        return AppPaths.get_app_data_dir() / "seen_ips.json"
+
+    @staticmethod
+    def get_log_file() -> Path:
+        """Get log file path"""
+        return AppPaths.get_logs_dir() / "network_monitor.log"
+
+    @staticmethod
+    def get_firewall_suggestions_file() -> Path:
+        """Get firewall suggestions file path"""
+        return AppPaths.get_firewall_dir() / "suggestions.txt"
+
+    @staticmethod
+    def get_auto_export_file(timestamp: str = None) -> Path:
+        """Get auto export file path"""
+        if not timestamp:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return AppPaths.get_exports_dir() / f"auto_export_{timestamp}.json"
+
+    @staticmethod
+    def ensure_directories():
+        """Create all necessary directories"""
+        directories = [
+            AppPaths.get_app_data_dir(),
+            AppPaths.get_logs_dir(),
+            AppPaths.get_exports_dir(),
+            AppPaths.get_firewall_dir(),
+        ]
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
+
+
 class MonitorThread(QThread):
     """Thread for monitoring network connections"""
 
@@ -165,7 +252,7 @@ class MonitorThread(QThread):
     def load_seen_ips(self):
         """Load previously seen IPs from file"""
         try:
-            ip_file = Path("seen_ips_live.json")
+            ip_file = AppPaths.get_seen_ips_file()
             if ip_file.exists():
                 with open(ip_file, "r") as f:
                     self.seen_ips = set(json.load(f))
@@ -176,7 +263,7 @@ class MonitorThread(QThread):
     def save_seen_ips(self):
         """Save seen IPs to file"""
         try:
-            with open("seen_ips_live.json", "w") as f:
+            with open(AppPaths.get_seen_ips_file(), "w") as f:
                 json.dump(list(self.seen_ips), f, indent=2)
         except Exception as e:
             self.error_occurred.emit(f"Error saving IPs: {e}")
@@ -269,9 +356,12 @@ class MonitorThread(QThread):
         self.running = True
         self.previous_connections = self.snapshot_connections()
 
-        # Create timestamped batch file
+        # Create timestamped batch file in firewall directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.bat_file = f"apply_firewall_blocks_{timestamp}.bat"
+        self.bat_file = (
+            AppPaths.get_firewall_dir()
+            / f"apply_firewall_blocks_{timestamp}.bat"
+        )
 
         # Initialize batch file
         try:
@@ -280,7 +370,10 @@ class MonitorThread(QThread):
                 bat.write(
                     "REM Run this file as Administrator to apply firewall rules\n"
                 )
-                bat.write("REM Created by Network Monitor\n\n")
+                bat.write("REM Created by Network Monitor\n")
+                bat.write("REM File: {}\n\n".format(self.bat_file))
+                bat.write("echo Applying firewall rules...\n")
+                bat.write("echo.\n")
         except Exception as e:
             self.error_occurred.emit(f"Error creating batch file: {e}")
 
@@ -419,7 +512,9 @@ class MonitorThread(QThread):
 
                 # Log to firewall suggestions
                 with open(
-                    "firewall_block_suggestions.txt", "a", encoding="utf-8"
+                    AppPaths.get_firewall_suggestions_file(),
+                    "a",
+                    encoding="utf-8",
                 ) as f:
                     f.write(f"[{datetime.now()}] {proc} -> {ip}\n")
                     f.write(f"{netsh_command}\n\n")
@@ -709,6 +804,9 @@ class NetworkMonitorGUI(QMainWindow):
         self.settings = QSettings("NetworkMonitor", "App")
         self.load_settings()
 
+        # Ensure all directories exist
+        AppPaths.ensure_directories()
+
         self.init_ui()
         self.init_tray()
         self.init_menu()
@@ -717,9 +815,15 @@ class NetworkMonitorGUI(QMainWindow):
         # Track if we're shutting down
         self.shutting_down = False
 
+        # Log startup
+        self.log_message(
+            f"Application started. Data directory: {AppPaths.get_app_data_dir()}",
+            "info",
+        )
+
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("Network Monitor v1.0")
+        self.setWindowTitle(f"Network Monitor {__version__}")
         self.setMinimumSize(1000, 600)
 
         # Central widget
@@ -920,6 +1024,12 @@ class NetworkMonitorGUI(QMainWindow):
         help_action.triggered.connect(self.show_help)
         self.toolbar.addAction(help_action)
 
+        # Data directory button
+        self.toolbar.addSeparator()
+        data_dir_action = QAction("📁 Open Data Directory", self)
+        data_dir_action.triggered.connect(self.open_data_directory)
+        self.toolbar.addAction(data_dir_action)
+
     def init_status_bar(self):
         """Initialize the status bar"""
         self.status_bar = QStatusBar()
@@ -928,6 +1038,11 @@ class NetworkMonitorGUI(QMainWindow):
         # Status label
         self.status_label = QLabel("Ready")
         self.status_bar.addWidget(self.status_label)
+
+        # Data directory label
+        data_dir_label = QLabel(f"Data: {AppPaths.get_app_data_dir().name}")
+        data_dir_label.setToolTip(str(AppPaths.get_app_data_dir()))
+        self.status_bar.addWidget(data_dir_label)
 
         # Statistics labels
         self.connections_label = QLabel("Connections: 0")
@@ -967,9 +1082,14 @@ class NetworkMonitorGUI(QMainWindow):
 
         file_menu.addSeparator()
 
+        open_data_dir_action = QAction("Open Data Directory", self)
+        open_data_dir_action.triggered.connect(self.open_data_directory)
+        file_menu.addAction(open_data_dir_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("&Exit", self)
-        # exit_action.triggered.connect(self.close)
-        exit_action.triggered.connect(self.quit_application)        
+        exit_action.triggered.connect(self.quit_application)
         file_menu.addAction(exit_action)
 
         # View menu
@@ -992,6 +1112,10 @@ class NetworkMonitorGUI(QMainWindow):
         show_firewall_action.triggered.connect(self.show_firewall_rules)
         tools_menu.addAction(show_firewall_action)
 
+        open_logs_action = QAction("Open Logs Directory", self)
+        open_logs_action.triggered.connect(self.open_logs_directory)
+        tools_menu.addAction(open_logs_action)
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
@@ -999,9 +1123,9 @@ class NetworkMonitorGUI(QMainWindow):
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
-        # docs_action = QAction("&Documentation", self)
-        # docs_action.triggered.connect(self.show_documentation)
-        # help_menu.addAction(docs_action)
+        docs_action = QAction("&Documentation", self)
+        docs_action.triggered.connect(self.show_documentation)
+        help_menu.addAction(docs_action)
 
     def create_control_panel(self) -> QWidget:
         """Create the control panel with buttons and settings"""
@@ -1144,6 +1268,12 @@ class NetworkMonitorGUI(QMainWindow):
 
             tray_menu.addSeparator()
 
+            open_data_dir_action = QAction("Open Data Directory", self)
+            open_data_dir_action.triggered.connect(self.open_data_directory)
+            tray_menu.addAction(open_data_dir_action)
+
+            tray_menu.addSeparator()
+
             quit_action = QAction("Quit", self)
             quit_action.triggered.connect(self.quit_application)
             tray_menu.addAction(quit_action)
@@ -1182,6 +1312,34 @@ class NetworkMonitorGUI(QMainWindow):
 
         # Connection tracking for duration calculation
         self.active_connection_times = {}
+
+    def open_data_directory(self):
+        """Open the data directory in file explorer"""
+        try:
+            data_dir = AppPaths.get_app_data_dir()
+            if platform.system() == "Windows":
+                os.startfile(data_dir)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.Popen(["open", data_dir])
+            else:  # Linux
+                subprocess.Popen(["xdg-open", data_dir])
+            self.log_message(f"Opened data directory: {data_dir}", "info")
+        except Exception as e:
+            self.log_message(f"Failed to open data directory: {e}", "error")
+
+    def open_logs_directory(self):
+        """Open the logs directory in file explorer"""
+        try:
+            logs_dir = AppPaths.get_logs_dir()
+            if platform.system() == "Windows":
+                os.startfile(logs_dir)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.Popen(["open", logs_dir])
+            else:  # Linux
+                subprocess.Popen(["xdg-open", logs_dir])
+            self.log_message(f"Opened logs directory: {logs_dir}", "info")
+        except Exception as e:
+            self.log_message(f"Failed to open logs directory: {e}", "error")
 
     def show_normal(self):
         """Show and restore window"""
@@ -1347,7 +1505,7 @@ class NetworkMonitorGUI(QMainWindow):
         # Log to file if enabled
         if self.log_check.isChecked():
             try:
-                with open("network_live_log.txt", "a", encoding="utf-8") as f:
+                with open(AppPaths.get_log_file(), "a", encoding="utf-8") as f:
                     f.write(f"{datetime.now().isoformat()}: {log_msg}\n")
             except Exception as e:
                 self.log_message(f"Error writing to log file: {e}", "error")
@@ -1767,10 +1925,16 @@ class NetworkMonitorGUI(QMainWindow):
 
         rows = sorted(set(item.row() for item in selected))
 
+        # Default to exports directory
+        default_dir = str(AppPaths.get_exports_dir())
+        default_name = (
+            f"connections_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Export Selected Connections",
-            "",
+            os.path.join(default_dir, default_name),
             "CSV Files (*.csv);;JSON Files (*.json);;Text Files (*.txt)",
         )
 
@@ -1908,10 +2072,14 @@ class NetworkMonitorGUI(QMainWindow):
             if not ok:
                 return
 
+        # Default to exports directory
+        default_dir = str(AppPaths.get_exports_dir())
+        default_name = f"network_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{format.lower()}"
+
         filename, _ = QFileDialog.getSaveFileName(
             self,
             f"Export Data as {format}",
-            f"network_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            os.path.join(default_dir, default_name),
             f"{format} Files (*.{format.lower()})",
         )
 
@@ -2160,10 +2328,9 @@ class NetworkMonitorGUI(QMainWindow):
     def show_firewall_rules(self):
         """Show generated firewall rules"""
         try:
-            if os.path.exists("firewall_block_suggestions.txt"):
-                with open(
-                    "firewall_block_suggestions.txt", "r", encoding="utf-8"
-                ) as f:
+            rules_file = AppPaths.get_firewall_suggestions_file()
+            if rules_file.exists():
+                with open(rules_file, "r", encoding="utf-8") as f:
                     rules = f.read()
 
                 dialog = QDialog(self)
@@ -2259,8 +2426,12 @@ class NetworkMonitorGUI(QMainWindow):
 
     def show_help(self):
         """Show help dialog"""
-        help_text = """
+        help_text = f"""
         <h2>Network Monitor Help</h2>
+
+        <h3>Data Storage:</h3>
+        <p>All application data is stored in:<br>
+        <code>{AppPaths.get_app_data_dir()}</code></p>
 
         <h3>Basic Usage:</h3>
         <ul>
@@ -2291,6 +2462,7 @@ class NetworkMonitorGUI(QMainWindow):
             <li>Use the system tray icon to minimize to background</li>
             <li>Enable auto-export for regular backups of your data</li>
             <li>Check the Event Log tab for detailed connection history</li>
+            <li>Use the 📁 button to open the data directory</li>
         </ul>
         """
 
@@ -2316,9 +2488,12 @@ class NetworkMonitorGUI(QMainWindow):
         QMessageBox.about(
             self,
             "About Network Monitor",
-            """
-            <h2>Network Monitor v1.0</h2>
+            f"""
+            <h2>Network Monitor {__version__}</h2>
             <p>A real-time network connection monitoring tool.</p>
+
+            <p><b>Data Directory:</b><br>
+            {AppPaths.get_app_data_dir()}</p>
 
             <p><b>Features:</b></p>
             <ul>
@@ -2333,6 +2508,7 @@ class NetworkMonitorGUI(QMainWindow):
 
             <p><b>Platform:</b> Windows (with psutil support)</p>
             <p><b>License:</b> MIT License</p>
+            <p><b>GitHub:</b> github.com/bouness/network-monitor</p>
             """,
         )
 
@@ -2352,8 +2528,7 @@ class NetworkMonitorGUI(QMainWindow):
     def auto_export(self):
         """Automatically export data"""
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"auto_export_{timestamp}.json"
+            filename = AppPaths.get_auto_export_file()
 
             connections = []
             for row in range(self.connection_table.rowCount()):
@@ -2446,6 +2621,15 @@ class NetworkMonitorGUI(QMainWindow):
             self.stats_widget.updateGeometry()
 
 
+def resource_path(relative_path):
+    """Get path relative to the executable or script."""
+    if getattr(sys, "frozen", False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
 def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
@@ -2455,21 +2639,11 @@ def main():
 
     # Set application style - use system default
     app.setStyle("Fusion")  # Fusion works well on all platforms
+    app_icon = QIcon(resource_path("assets/icon.png"))
+    app.setWindowIcon(app_icon)
 
-    # Create necessary directories and files
-    Path("logs").mkdir(exist_ok=True)
-
-    for filename in [
-        "network_live_log.txt",
-        "firewall_block_suggestions.txt",
-        "seen_ips_live.json",
-    ]:
-        if not Path(filename).exists():
-            try:
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(f"Created: {datetime.now()}\n")
-            except Exception:
-                pass
+    # Ensure directories exist
+    AppPaths.ensure_directories()
 
     window = NetworkMonitorGUI()
 
