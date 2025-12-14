@@ -147,6 +147,18 @@ COLORS = {
 }
 
 
+def resource_path(relative_path):
+    """Get path relative to the executable or script."""
+    if getattr(sys, "frozen", False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+SOUND_ALERT = resource_path("assets/notification.wav")
+
+
 class AppPaths:
     """Handle all application paths for proper Windows deployment"""
 
@@ -1559,7 +1571,10 @@ class NetworkMonitorGUI(QMainWindow):
         # Play sound if enabled
         if self.sound_check.isChecked() and winsound:
             try:
-                winsound.Beep(1000, 300)
+                # winsound.Beep(1000, 300)
+                winsound.PlaySound(
+                    SOUND_ALERT, winsound.SND_FILENAME | winsound.SND_ASYNC
+                )
             except Exception:
                 pass
 
@@ -2619,15 +2634,6 @@ class NetworkMonitorGUI(QMainWindow):
         # Update layouts when window is resized
         if hasattr(self, "stats_widget"):
             self.stats_widget.updateGeometry()
-
-
-def resource_path(relative_path):
-    """Get path relative to the executable or script."""
-    if getattr(sys, "frozen", False):
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
 
 
 def main():
